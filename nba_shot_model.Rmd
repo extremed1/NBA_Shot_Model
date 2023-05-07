@@ -1,0 +1,820 @@
+---
+title: '2021-2022 NBA Season Shot Prediction Model'
+author: "Danielle Moore"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+    number_sections: no
+    incremental: true
+---
+# Abstract
+
+In the modern NBA, floor spacing is a major key to the success of an offensive system. We no longer see offenses that “pack” all five players within the three-point line; today, offensive systems utilize the three-point line to create more spacing to produce easier shots. Floor spacing can be manufactured, but it is heavily dependent on the design of an offensive system. Consequently, shot selection carries equal importance on the success of an offensive system. As Brian Skinner (2012) mentioned in his article The Problem of Shot Selection in Basketball, “the purpose of an offensive set is to generate a high-quality shot opportunity” (p.1).  Thus, it is important for teams to be aware of a player’s ability to make shots and their shot selection. This study will examine the probability of an NBA player making a shot and what factors impact shot success. I develop a predictive shot model using logistic regression to predict whether a shot will be successful using five concepts: 
+
+*	the zone of where the shot was taken (location),
+*	the distance between the shooter and the nearest defender, 
+*	the quarter in which the shot was taken,
+*	touch time, and
+*	whether the shot was off the dribble.
+
+Shot data from the 2021-2022 NBA season was used to train and test the model.  Results showed that zone location and the closest defender distance were the most important factors to shot success followed by touch time and period, respectively.  Shot success probabilities were the highest in the restricted area and corner threes. This model could be used to help teams with game planning, player development, and roster construction. 
+
+
+
+
+# Retrieving and cleaning the data
+
+```{r Packages, warning=FALSE, include=FALSE}
+
+library(tidyverse)
+library(readxl)
+library(rsample)
+library(ROCR)
+library(corrplot)
+library(caret)
+library(magick)
+library(cowplot)
+library(extrafont)
+library(vip)
+library(vcd)
+library(gt)
+library(gtsummary)
+library(glue)
+
+loadfonts(device='win')
+```
+
+
+### 2021-2022 NBA Shot Data
+
+```{r Data, message=FALSE, warning=FALSE}
+df <- read_excel("C:\\Users\\danni\\Documents\\R Projects\\NBA Shot Model Capstone\\Merged_NBA21_22_Shots.xlsx")
+
+nba <- df %>%
+  filter(zoneBasic != 'Backcourt')%>%
+  filter(period != 5 & period != 6 &period != 7) %>%
+  mutate(off_dribble = recode(dribble_range, 
+                              "0 Dribbles" = "0", 
+                              "1 Dribble" = "1",
+                              "2 Dribbles" = "1",
+                              "3-6 Dribbles" = "1",
+                              "7+ Dribbles" = "1")) %>%
+  mutate(across(c(close_def_dist,off_dribble,touch_time,shot_clock,zoneBasic,period),
+                factor))
+
+nba$zoneBasic <- relevel(nba$zoneBasic, ref='Restricted Area')
+
+```
+
+
+
+# Shot Distributions and Variable Correlation Testing
+
+
+### Shot Made Rates
+```{r Distributions & Shot Made Rates}
+### Zones
+zones_dis <- nba %>% group_by(zoneBasic)%>% 
+  summarize(count=n(),shot_made_rate = mean(isShotMade)) %>%
+  gt() %>%
+  cols_label(
+  zoneBasic = 'Zone', count = 'Count', shot_made_rate = 'Shot Made Rate') %>%
+  tab_header(
+    title = 'Zone Count Distribution & Shot Made Rates') %>%
+  gtExtras::gt_color_rows(columns = shot_made_rate, palette = "ggsci::blue_material" ) %>%
+  gtExtras::gt_theme_nytimes() %>%
+  gtExtras::fmt_symbol_first(c(shot_made_rate), decimals =3)
+ 
+zones_dis
+
+#zones_dis %>%
+  #gtsave("C:\\Users\\danni\\OneDrive\\Pictures\\zone_dis.png", expand = 20) 
+
+
+### defender distance
+def_dist_dis <- nba %>% group_by(close_def_dist) %>% summarize(count=n(),shot_made_rate = mean(isShotMade)) %>% gt() %>%
+  cols_label(
+  close_def_dist = 'Closest Defender Distance', count = 'Count', shot_made_rate = 'Shot Made Rate') %>%
+  tab_header(
+    title = 'Closest Defender Distance Count Distribution & Shot Made Rates') %>%
+  gtExtras::gt_color_rows(columns = shot_made_rate, palette = "ggsci::blue_material" ) %>%
+  gtExtras::gt_theme_nytimes() %>%
+  gtExtras::fmt_symbol_first(c(shot_made_rate), decimals =3)
+
+def_dist_dis
+
+#def_dist_dis %>%
+  #gtsave("C:\\Users\\danni\\OneDrive\\Pictures\\def_dist_dis.png", expand = 20)
+
+### period
+period_dis <- nba %>% group_by(period) %>% summarize(count=n(),shot_made_rate = mean(isShotMade)) %>% gt() %>%
+  cols_label(
+  period = 'Period', count = 'Count', shot_made_rate = 'Shot Made Rate') %>%
+  tab_header(
+    title = 'Period (Quarter) Count Distribution & Shot Made Rates') %>%
+  gtExtras::gt_color_rows(columns = shot_made_rate, palette = "ggsci::blue_material" ) %>%
+  gtExtras::gt_theme_nytimes() %>%
+  gtExtras::fmt_symbol_first(c(shot_made_rate), decimals =3)
+
+period_dis
+
+#period_dis %>%
+  #gtsave("C:\\Users\\danni\\OneDrive\\Pictures\\period_dis.png", expand = 20)
+
+### touch time
+touch_dis<- nba %>% group_by(touch_time) %>% summarize(count=n(),shot_made_rate = mean(isShotMade)) %>% gt() %>%
+  cols_label(
+  touch_time = 'Touch Time', count = 'Count', shot_made_rate = 'Shot Made Rate') %>%
+  tab_header(
+    title = 'Touch Time Count Distribution & Shot Made Rates') %>%
+  gtExtras::gt_color_rows(columns = shot_made_rate, palette = "ggsci::blue_material" ) %>%
+  gtExtras::gt_theme_nytimes() %>%
+  gtExtras::fmt_symbol_first(c(shot_made_rate), decimals =3)
+
+touch_dis
+
+#touch_dis %>%
+  #gtsave("C:\\Users\\danni\\OneDrive\\Pictures\\touch_dis.png", expand = 20)
+
+### off_dribble
+off_dis <- nba %>% group_by(off_dribble) %>% summarize(count=n(),shot_made_rate = mean(isShotMade)) %>% gt() %>%
+  cols_label(
+  off_dribble = 'Off Dribble', count = 'Count', shot_made_rate = 'Shot Made Rate') %>%
+  tab_header(
+    title = 'Off the Dribble Count Distribution & Shot Made Rates',
+    subtitle = '0 = Not off the dribble, 1 = Off the Dribble') %>%
+  gtExtras::gt_color_rows(columns = shot_made_rate, palette = "ggsci::blue_material" ) %>%
+  gtExtras::gt_theme_nytimes() %>%
+  gtExtras::fmt_symbol_first(c(shot_made_rate), decimals =3)
+
+off_dis
+
+#off_dis %>%
+  #gtsave("C:\\Users\\danni\\OneDrive\\Pictures\\off_dis.png", expand = 20)
+
+```
+
+
+
+
+
+
+### Correlations (Cramer's V)
+
+```{r Cramers V, echo=TRUE, message=FALSE, warning=FALSE}
+## Creating contingency table 
+
+
+tab<- table(nba$zoneBasic, nba$close_def_dist, nba$touch_time, nba$period, dnn=c('Zone','Closest Defender Distance','Touch Time','Period'))
+
+###Code to create plots
+if(FALSE){
+#converting from table to data frame that features row and column names like a matrix
+tab_to_df <- function(x){
+  mat <- as.matrix.data.frame(x)
+  df <- data.frame(mat)
+  rownames(df) <- c('Restricted Area','Above the Break 3','In The Paint (Non-RA)','Left Corner 3','Mid-Range','Right Corner 3')
+  colnames(df) <- c('Very Tight (0-2ft)','Tight (2-4ft)','Open (4-6ft)','Wide Open (6ft+)')
+  
+  return(df)
+}
+
+
+
+#gt function for stratified tables in presentation format
+gt_contin <- function(tbl,tbl.num,t_time,period){
+  
+  gt.tab <- tbl %>%
+  gt::gt(rownames_to_stub = TRUE) %>%
+  tab_header(
+    title = glue('Stratified Table #{tbl.num}'),
+    subtitle = glue('Touch Time {t_time}, Period = {period}')
+  ) %>%
+  tab_spanner(
+    label = 'Closest Defender Distance',
+    columns = c('Very Tight (0-2ft)','Tight (2-4ft)','Open (4-6ft)','Wide Open (6ft+)')) %>%
+  tab_stubhead(
+    label = 'Zone'
+  ) %>%
+  gtExtras::gt_theme_nytimes()
+  
+}
+
+# Placing stratified tables on one plot
+tab1 <- tab_to_df(tab[,,1,1])
+gt1 <- gt_contin(tab1,1,'<2 seconds',1)
+gt1 %>%
+ gtsave("p1.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+
+tab2 <- tab_to_df(tab[,,2,1])
+gt2 <- gt_contin(tab2,2,'2-6 seconds',1)
+gt2 %>%
+  gtsave("p2.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+  
+tab3 <- tab_to_df(tab[,,3,1])
+gt3 <- gt_contin(tab3,3,'6ft+ seconds',1)
+gt3 %>%
+  gtsave("p3.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+
+
+tab4 <- tab_to_df(tab[,,1,2])
+gt4 <- gt_contin(tab4,4,'<2 seconds',2)
+gt4 %>%
+ gtsave("p4.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+
+tab5 <- tab_to_df(tab[,,2,2])
+gt5 <- gt_contin(tab5,5,'2-6 seconds',2)
+gt5 %>%
+  gtsave("p5.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+  
+tab6 <- tab_to_df(tab[,,3,2])
+gt6 <- gt_contin(tab6,6,'6ft+ seconds',2)
+gt6 %>%
+  gtsave("p6.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+
+
+tab7 <- tab_to_df(tab[,,1,3])
+gt7 <- gt_contin(tab7,7,',2 seconds',3)
+gt7 %>%
+  gtsave("p7.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+
+tab8 <- tab_to_df(tab[,,2,3])
+gt8 <- gt_contin(tab7,8,'2-6 seconds',3)
+gt8 %>%
+  gtsave("p8.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+  
+tab9 <- tab_to_df(tab[,,3,3])
+gt9 <- gt_contin(tab7,9,'6ft+ seconds',3)
+gt9 %>%
+  gtsave("p9.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+
+
+tab10 <- tab_to_df(tab[,,1,4])
+gt10 <- gt_contin(tab10,10,'<2 seconds',4)
+gt10 %>%
+  gtsave("p10.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+
+tab11 <- tab_to_df(tab[,,2,4])
+gt11 <- gt_contin(tab11,11,'2-6 seconds',4)
+gt11 %>%
+  gtsave("p11.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+  
+tab12 <- tab_to_df(tab[,,3,4])
+gt12 <- gt_contin(tab12,12,'6ft+ seconds',4)
+gt12 %>%
+  gtsave("p12.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+
+}
+###
+
+p1 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\p1.png", scale = 0.8)
+p2 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\p2.png", scale = 0.8)
+p3 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\p3.png", scale = 0.8)
+p4 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\p4.png", scale = 0.8)
+p5 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\p5.png", scale =0.8)
+p6 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\p6.png", scale = 0.8)
+p7 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\p7.png", scale = 0.8)
+p8 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\p8.png", scale = 0.8)
+p9 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\p9.png", scale = 0.8)
+p10 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\p10.png", scale =0.8)
+p11 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\p11.png", scale = 0.8)
+p12 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\p12.png", scale = 0.8)
+
+
+pg1 <- plot_grid(
+  p1,p2,p3,p4,
+   labels= c(1:4),
+  align = 'hv')
+
+pg2 <- plot_grid(
+  p5,p6,p7,p8,
+   labels= c(5:8),
+  align = 'hv')
+
+pg3 <-plot_grid(
+  p9,p10,p11,p12,
+   labels= c(9:12),
+  align = 'hv')
+
+
+######## Cramer's V Table ######
+
+#getting Cramer's V for each stratified table
+stats <-assocstats(tab) 
+
+v<-c()
+for (i in stats) {
+  v <-c(v,round(i[[5]],3))
+}
+
+tab.order <- c(1:12)
+c.df <- data.frame(tab.order, v )
+
+
+
+t <- c.df %>%
+  gt() %>%
+  cols_label(
+    tab.order = "Table #", v = "Cramer's V"
+  ) %>%
+  gtExtras::gt_color_rows(columns = v, palette = "ggsci::blue_material" ) %>%
+  gt::tab_header(title = paste("Cramer's V for Each Contingency Table")) %>%
+  tab_options(
+    table.font.size = px(20),
+    data_row.padding = px(1),
+  ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold")
+    ),
+    locations = cells_body(
+      columns = c(1)
+    )
+  ) %>%
+  gtExtras::gt_theme_nytimes() %>%
+  gtExtras::fmt_symbol_first(c(v), decimals =3)
+
+pg1
+pg2
+pg3
+t
+
+#t %>%
+  #gtsave("C:\\Users\\danni\\OneDrive\\Pictures\\cramers.png", expand = 20)
+```
+
+'Off Dribble' is not included in the correlations since--as we'll see in the next section--the 'Off Dribble' predictor is insignificant to our model, therefore, it can be removed from the model. Only factors that were significant to the final model are included in the correlations test. 
+
+
+
+
+
+# Results
+
+
+### Shot Prediction Model (Logistic Regression)
+
+```{r Log Model, echo=TRUE, message=FALSE, warning=FALSE}
+
+set.seed(1234)
+split = initial_split(data=nba,prop=0.75)
+Train = training(split)
+Test = testing(split)
+
+
+
+nba.m<- glm(isShotMade ~ zoneBasic + close_def_dist + touch_time + period + off_dribble, data=Train, family = 'binomial') 
+
+
+tbl_reg_nba1 <- nba.m %>%
+  tbl_regression() %>%
+  as_gt() %>%
+  gt::tab_header("Summary Table of NBA Shot Model Results ") %>% 
+  tab_options(
+    table.font.size = px(20),
+    data_row.padding = px(1),
+  ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold")
+    ),
+    locations = cells_body(
+      columns = c(1)
+    )
+  ) %>%
+  gtExtras::gt_theme_nytimes()
+
+  tbl_reg_nba1
+  
+#tbl_reg_nba1 %>%
+  #gtsave("C:\\Users\\danni\\OneDrive\\Pictures\\old model summary.png", expand = 20)
+
+```
+
+All levels for the Zone and Closest Defender Distance categories are significant. However, for both Touch Time and Period, only one level is significant and Off Dribble is insignificant as well. We can make a decision to include these variables by building models without those categories and then checking a likelihood ratio test. 
+
+
+
+### Likelihood Ratio Test
+
+```{r Likelihood tests, echo=TRUE, message=FALSE, warning=FALSE}
+#without touch time
+nba.m2 <-glm(isShotMade ~ zoneBasic + close_def_dist + period + off_dribble, data=Train, family = 'binomial')
+
+
+#without period
+nba.m3 <-glm(isShotMade ~ zoneBasic + close_def_dist + touch_time + off_dribble, data=Train, family = 'binomial') 
+
+
+#without off_dribble
+nba.m4<-glm(isShotMade ~ zoneBasic + close_def_dist + touch_time + period, data=Train, family = 'binomial') 
+
+
+###Below code is used to create thre gt tables and place onto one plot 
+if(FALSE){
+#2nd model anova (LRT)
+m2 <- anova(nba.m,nba.m2, test='LRT')#should be included since p-value less than 0.05
+
+#3rd model anova (LRT)
+m3 <- anova(nba.m,nba.m3, test='LRT')#should be included since p-value less than 0.05
+
+#4th model anova (LRT)
+m4 <- anova(nba.m,nba.m4, test='LRT') #should NOT be included since p-value greater than 0.05
+
+anova2 <- m2 %>%
+  gt() %>%
+  tab_header(
+    title = 'ANOVA for Model Without Touch Time'
+  ) %>%
+  gtExtras::gt_highlight_cols(`Pr(>Chi)`, fill='green', alpha = 0.5) %>%
+  gtExtras::gt_theme_nytimes()
+anova2 %>%
+  gtsave("anova2.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+  
+
+
+anova3 <- m3 %>%
+  gt() %>%
+  tab_header(
+    title = 'ANOVA for Model Without Period'
+  ) %>%
+  gtExtras::gt_highlight_cols(`Pr(>Chi)`, fill='green', alpha = 0.5) %>%
+  gtExtras::gt_theme_nytimes()
+
+anova3 %>%
+  gtsave("anova3.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+
+anova4 <- m4 %>%
+  gt() %>%
+  tab_header(
+    title = 'ANOVA for Model Without Off Dribble'
+  ) %>%
+  gtExtras::gt_highlight_cols(`Pr(>Chi)`, fill='red', alpha = 0.5) %>%
+  gtExtras::gt_theme_nytimes()
+
+anova4 %>%
+  gtsave("anova4.png", path = 'C:\\Users\\danni\\OneDrive\\Pictures')
+}
+###
+
+# ANOVA Plots for LRT
+anova.p2 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Documents\\NBA Capstone\\anova2.png", scale = 0.8)
+
+anova.p3 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Documents\\NBA Capstone\\anova3.png", scale = 0.8)
+
+anova.p4 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Documents\\NBA Capstone\\anova4.png", scale = 0.8)
+
+an.pg <- plot_grid(
+  anova.p2,anova.p3,anova.p4,
+   labels= c(1:4),
+  align = 'hv')
+
+an.pg
+
+```
+
+Based on the results from the ANOVA tables, Touch Time and Period should be included in the model, but Off Dribble can be removed.
+
+### Final Model
+
+```{r log model final results, warning=FALSE}
+
+tbl_reg_nba2 <- nba.m4 %>%
+  tbl_regression() %>%
+  as_gt() %>%
+  gt::tab_header("Summary Table of New NBA Shot Model Results ") %>% 
+  tab_options(
+    table.font.size = px(20),
+    data_row.padding = px(1),
+  ) %>%
+  tab_style(
+    style = list(
+      cell_text(weight = "bold")
+    ),
+    locations = cells_body(
+      columns = c(1)
+    )
+  ) %>%
+  gtExtras::gt_theme_nytimes() 
+  
+tbl_reg_nba2
+
+#tbl_reg_nba2 %>%
+  #gtsave("C:\\Users\\danni\\OneDrive\\Pictures\\new nba log results.png", expand = 20)
+
+
+log_coe_exp <- exp(c(-1.3,-0.91,-1.1,-1.0,-1.1,0.21,0.28,0.20,-0.05,0.00,-0.03,-0.02,-0.07))
+log_coe_exp_df <- data.frame(log_coe_exp)
+rownames(log_coe_exp_df) <- c('Above the Break 3','In The Paint (Non-RA)','Left Corner 3','Mid-Range','Right Corner 3','2-4 Feet - Tight','4-6 Feet- Open','6+ Feet- Wide Open','Touch 2-6 Seconds','Touch 6+ Seconds','2','3','4')
+
+
+expo_coe <- log_coe_exp_df %>%
+  gt::gt(rownames_to_stub = TRUE) %>%
+  tab_header(
+    title = "Odds Ratio's for New Model Coefficents",
+    subtitle = "Exponentiation of the coefficients"
+  ) %>%
+  tab_row_group(
+    label = 'zoneBasic',
+    rows = c('Above the Break 3','In The Paint (Non-RA)','Left Corner 3','Mid-Range','Right Corner 3')
+  ) %>%
+   tab_row_group(
+    label = 'close_def_dist',
+    rows = c('2-4 Feet - Tight','4-6 Feet- Open','6+ Feet- Wide Open')) %>%
+  tab_row_group(
+    label = 'touch_time',
+    rows = c('Touch 2-6 Seconds','Touch 6+ Seconds')) %>%
+  tab_row_group(
+    label = 'period',
+    rows = c('2','3','4')) %>%
+  row_group_order(groups = c('zoneBasic','close_def_dist','touch_time','period')) %>%
+  gtExtras::fmt_symbol_first(c(log_coe_exp), decimals =3) %>%
+  cols_label(
+    log_coe_exp= "Odds Ratio") %>%
+  gtExtras:: gt_theme_nytimes()
+
+expo_coe
+
+#expo_coe %>%
+  #gtsave("C:\\Users\\danni\\OneDrive\\Pictures\\Odds.png", expand = 20)
+
+```
+
+All coefficients were negative excluding the “closest_def_distance” variable. The coefficients convey the estimated log-odds of a factor relative to its reference level i.e. the estimated log-odds is 0.21 larger in “2-4 feet – Tight” than the reference level of “0-2 feet- Very Tight”.  To obtain the odds ratios, all coefficients were exponentiated as shown in the Odds Ratio's table. 
+
+ 
+### Confusion Matrix and AUC Curve
+
+```{r Confusion Matrix & AUC Curve, warning=FALSE}
+predict_reg3 <- predict(nba.m4, 
+                        Test, type = "response")
+
+Test$prob <- c(predict_reg3) #adding probabilities to dataframe
+
+predict_reg4 <- ifelse(predict_reg3 >0.45,1, 0) ##changing probabilities
+
+
+
+
+
+
+
+
+#confusion matrix
+con.tbl <-table(Test$isShotMade, predict_reg4) 
+
+con.mat <- as.matrix.data.frame(con.tbl)
+con.df <- data.frame(con.mat)
+rownames(con.df) <- c('Predicted Shot Missed','Predicted Shot Made')
+colnames(con.df) <- c('Actual Shot Missed','Actual Shot Made')
+
+gt.con <- con.df %>%
+  gt::gt(rownames_to_stub = TRUE) %>%
+  tab_header(
+    title = 'Confusion Matrix'
+    )%>%
+  tab_style(
+    style = cell_fill(color = 'green', alpha = 0.75),
+    locations= cells_body(
+      columns = `Actual Shot Missed`,
+      rows = 1)
+    )%>%
+    tab_style(
+    style = cell_fill(color = 'green', alpha = 0.75),
+    locations= cells_body(
+      columns = `Actual Shot Made`,
+      rows = 2)
+    ) %>%
+  tab_style(
+    style = cell_fill(color = 'red', alpha = 0.75),
+    locations= cells_body(
+      columns = `Actual Shot Made`,
+      rows = 1)
+    )%>%
+    tab_style(
+    style = cell_fill(color = 'red', alpha = 0.75),
+    locations= cells_body(
+      columns = `Actual Shot Missed`,
+      rows = 2)
+    ) %>%
+  gtExtras::gt_theme_nytimes()
+
+gt.con
+
+gt.con %>% 
+  gtsave("C:\\Users\\danni\\OneDrive\\Pictures\\confusion.png", expand = 20)
+
+
+
+
+#prediction accuracy
+missing_classerr <- mean(predict_reg4 != Test$isShotMade)
+print(paste('Accuracy =', 1 - missing_classerr)) 
+
+ROCPred <- prediction(predict_reg3, Test$isShotMade) 
+ROCPer <- performance(ROCPred, measure = "tpr", 
+                      x.measure = "fpr")
+#area under curve
+auc <- performance(ROCPred, measure = "auc") 
+auc <- auc@y.values[[1]]
+auc
+
+#Plotting Curve
+plot(ROCPer, colorize = TRUE,
+    print.cutoffs.at= seq(0,1,0.05), 
+     main = "ROC CURVE",
+    text.adj=c(-0.2,1.7))
+abline(a = 0, b = 1)
+   
+auc <- round(auc, 4)
+legend(.6, .4, auc, title = "AUC", cex = 1)
+
+
+```
+
+A confusion matrix and an AUC-ROC curve were used to determine how well the new model successfully predicted the outcome of each shot.  According to the ROC-AUC curve, a threshold of 0.45 would result in the highest true positive rate with the lowest false positive rate. With a threshold of 0.45, my model had a prediction accuracy of about 63% with 21,605 true negatives and 10,118 true positives and an AUC (Area Under Curve) of roughly 61%. 
+
+
+
+### Variable Importance
+
+```{r Variable Importance, warning=FALSE}
+##variable importance scores & renaming variables
+vi_scores <- vi(nba.m4)
+vi_scores <- vi_scores %>%
+  mutate(Variable = recode( Variable,
+    `zoneBasicAbove the Break 3` = "Above the Break 3",
+    `zoneBasicIn The Paint (Non-RA)` = "In The Paint (Non-RA)",
+    `zoneBasicMid-Range` = "Mid-Range",
+    `zoneBasicLeft Corner 3` = "Left Corner 3",
+    `zoneBasicRight Corner 3` = "Right Corner 3",
+    `close_def_dist4-6 Feet - Open` = "4-6 Feet - Open",
+    `close_def_dist2-4 Feet - Tight` = "2-4 Feet - Tight",
+    `close_def_dist6+ Feet - Wide Open` = "6+ Feet - Wide Open",
+    period4 = "Period 4",
+    `touch_timeTouch 2-6 Seconds` = "Touch 2-6 Seconds",
+    period2 = "Period 2",
+    period3 = "Period 3",
+    `touch_timeTouch 6+ Seconds` = "Touch 6+ Seconds"
+  ))
+
+ #variable importance table
+vip_tbl <-vi_scores%>%
+  select(-Sign) %>%
+  gt() %>%
+  tab_header(
+    title = "Variable Importance Table"
+  ) %>%
+  tab_footnote(
+    footnote = "Variable is significant to the model",
+    locations = cells_body(
+      columns = Variable,
+      rows = Variable == "Above the Break 3" | Variable == "In the Paint (Non-RA)" | Variable == "Left Corner 3" |Variable == "Mid-Range" |Variable == "Right Corner 3"| Variable == "2-4 Feet - Tight" | Variable == "4-6 Feet - Open" |Variable == "6+ Feet - Wide Open" | Variable == "Touch 2-6 Seconds" | Variable == "Period 4" ) 
+    )%>%
+  opt_footnote_marks(marks = "standard") %>%
+  gtExtras::gt_theme_nytimes() %>%
+  gtExtras::gt_color_rows(columns = Importance, palette = "ggsci::purple_material")%>%
+  gtExtras::fmt_symbol_first(c(Importance), decimals =3)
+  
+vip_tbl 
+
+vip_tbl %>%
+  gtsave("C:\\Users\\danni\\OneDrive\\Pictures\\vip_tbl2.png", expand = 20)
+
+ #variable importance plot (only includes varibles that were significant to the model)
+
+vip(vi_scores, aesthetics = list(colour = 'blue', fill = 'blue')) 
+```
+
+Variable importance was determined by taking the absolute value of the z-values given in the full summary of the model.  At first glance, Above the Break 3’s having the highest importance in the model is surprising. However, when examining the distribution of shots taken in each zone, the dataset contains at least 22,500 more shots taken in the Above the Break 3 zone compared to other zones excluding the Restricted Area, likely contributing to its large influence. When accounting for variable importance by category, “zoneBasic” has the highest importance followed by “close_def_distance”, “period”, and “touch_time” respectively. 
+
+
+
+
+
+### Function for Probability Plots
+
+```{r Plot Function, warning=FALSE, include=FALSE}
+prob_charts <- function(df,prob_col,title){
+  mid<- mean(prob_col)
+  
+  nba_plot <- ggplot(df, aes(x=locationX, y=locationY, color = prob)) + geom_point() +
+    scale_colour_gradient2('Probability',low='blue', mid = 'white', high = 'red',
+                           midpoint = mid,space='Lab') +
+    theme(plot.title = element_text( hjust=.4,size = 20, family = "Comic Sans MS", face = "bold", vjust = 0, colour = "lightgrey"),
+          plot.margin=unit(c(1,2,1,1),"cm"),
+          plot.background = element_rect(fill = 'gray15', color = 'gray15'),
+          panel.background = element_rect(fill = 'gray15', color = 'gray15'),
+          panel.grid.major = element_line(colour= 'gray20'),
+          panel.grid.minor = element_blank(),
+          axis.line = element_line(colour="lightgrey"),
+          axis.text = element_text(family = "Comic Sans MS", face = "bold",colour="lightgrey"),
+          axis.title = element_text(family = "Comic Sans MS", face = "bold",colour="lightgrey"),
+          legend.background = element_blank(),
+          legend.text = element_text(hjust = .70, size = 10, family = "Comic Sans MS", face = "bold", colour = "white"),
+          legend.title = element_text(family = "Comic Sans MS", face = "bold",colour='lightgrey')
+    ) +
+    ggtitle(title)
+  
+  ggdraw(nba_plot) +
+    draw_image('https://cdn.nba.com/manage/2021/07/NBA_75-690x588.jpg',
+               x=.80,y=.73 ,height=.12, width=.12)
+}
+
+```
+
+
+
+
+### Probability Plot for All Shots
+
+```{r Plot: All Shots, echo=FALSE, warning=FALSE}
+nba_plot <- prob_charts(df=Test, prob_col=Test$prob,title="2021-2022 NBA Shot Probabilities")
+
+nba_plot
+```
+
+
+
+
+
+
+### Probability Plot for 3 Pointers
+
+```{r Plots: 3 Pointers, echo=FALSE, warning=FALSE}
+##3 pointers##
+nba_3 <- subset(Test, zoneBasic == "Above the Break 3" |
+                  zoneBasic =='Right Corner 3' | 
+                  zoneBasic =='Left Corner 3')
+
+
+nba_plot_3 <- prob_charts(df=nba_3,prob_col= nba_3$prob,title="2021-2022 NBA 3 Point Shot Probabilities")
+
+nba_plot_3
+```
+
+
+
+
+
+
+### Probability Plot for Mid-Range Shots
+
+```{r Plots: Mid-Range, echo=FALSE, warning=FALSE}
+nba_mid_range <- subset(Test, zoneBasic == "Mid-Range")
+
+nba_plot_2 <- prob_charts(df=nba_mid_range,prob_col= nba_mid_range$prob,title="2021-2022 NBA Mid-Range Shot Probabilities")
+
+nba_plot_2 
+```
+
+
+
+```{r Plots: Paint, warning=FALSE}
+nba_paint <- subset(Test, zoneBasic == "In The Paint (Non-RA)" | zoneBasic == "Restricted Area")
+
+nba_plot_3 <- prob_charts(df=nba_paint,prob_col= nba_paint$prob,title="2021-2022 NBA Paint Shot Probabilities")
+
+nba_plot_3 
+
+```
+
+```{undefined eval=FALSE, warning=FALSE, include=FALSE}
+
+p21 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\3pt nba update.png", scale = 0.95)
+p22 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\Mid range update.png", scale = 0.95)
+p23 <- ggdraw() + draw_image("C:\\Users\\danni\\OneDrive\\Pictures\\Paint Prob.png", scale = 0.95)
+
+
+pg24.grid <- plot_grid(
+  p21,p22,p23,
+   labels= c(1:3),
+  align = 'hv')
+
+pg24.grid
+
+```
+
+
+
+Shot probabilities generated from the model located areas of the court where the probability of a shot being successful were relatively high in comparison to other shots that were taken in the same region. In the paint, shots taken in the restricted area generated the highest success probabilities.  Corner threes had the highest success probabilities behind the three-point line.  Lastly, for mid-range shots, high success probabilities were scattered.  
+
+
+
+
+
+
+# Discussion and Conclusions
+
+The purpose of this study was to determine the areas of an NBA court where there is a high shot success probability, and which situational factors affect shot success the most.  This research can assist NBA teams with game planning, player development, and roster construction by providing teams with the basic foundations to create individualized shot models for players.  It is important for teams to be aware which situational factors affect a player’s shot success the most and where they increase or decrease their probability of making a shot.  The distance between a defender and shooter at the time of the shot may not be that impactful for some players, à la Stephen Curry or Kevin Durant, compared to others.  A team could use the information to determine how far off a defender could provide help side defense based on a specific player they are guarding without compromising a relatively high success shot. Teams could also use the information to build a roster that fits their basketball philosophy where they may value acquiring players who are three-point specialists or great finishers.  The ability of coaches, GM’s, and players to apply and implement this research correctly will be valuable. 
+
+There were a few findings from this research that I found particularly meaningful.  First, shots taken off the dribble were not significantly different from those that were not taken off the dribble.  Removal of the variable from the model had very little impact, suggesting shot success for NBA players is generally not impacted by the number of dribbles they take.  NBA players are professionals, thus generally speaking NBA players should have the ability to connect on shots whether it is off the dribble or not.  Secondly, the closest defender distance category was the only factor that had odds ratios that were greater than 1, meaning that the odds for each test level were greater than the “0-2- Very Tight” reference level.  The odds surprisingly decrease between “Open” and “Wide Open”, however, this change may be due to the randomness of the data.  
+Additionally, only shots taken in the 4th quarter are significantly different from those taken in the 1st quarter, confirming the results of Metulini and Le Carre (2021) which indicated that the 4th quarter of a game affects shooting performance.  The odds of a successful shot in the 4th quarter are 0.932 lower than the 1st quarter.  This may be due to fatigue, increased defensive intensity, and teams likely having their best defensive players on the court due to the importance of the end of the game.  The “touch_time” variable is an interesting case since intuitively the odds ratio for “Touch 6+ Seconds” should be lower than “Touch 2-6 Seconds”. My model suggests that the estimated odds of shot success with a touch time of 6+ seconds does not change compared to a touch time of less than 2 seconds.  However, Partnow (2021) found that when examining touch time vs. field goal percentage, there is a huge gap in efficiency on closer shots, but for mid-range and 3pt shots, efficiency is “more or less equidistant” from the average.  In fact, for mid-range and 3pt shots, a touch time of 6+ seconds had a higher field goal percentage than those with a touch time of 2-6 seconds.  This finding helps explain why there is a significant difference between a touch time of less than 2 seconds and 2-6 seconds, and no significant difference between a touch time of less than 2 seconds and 6+ seconds as my model is inherently tied to field goal efficiency.  Unsurprisingly, the shot location variables (zone’s) had the largest influence on the model followed by closest defender distance, period, and touch time respectively.  Lastly, accuracy of my model (63%) fell within the range of prediction accuracies found in similar research.  Shot models that have utilized logistic regression as the classification method have produced prediction accuracies within the range of 55%-67%.  While other machine learning methods have shown to perform better, obtaining a prediction accuracy above 70% has yet to occur.  Based on the results from this project and other research, one can assume that shot location and the closest defender distance are the most important situational factors in predicting shot success.  These factors can be influenced in a variety of ways such as offensive scheme, bad defense, ball movement, and more.  The areas of the court where the probability of shot success is relatively high are corner three pointers, which is likely due to the shorter distance to the rim compared to three pointers taken in other areas, and shots attempted in the restricted area.  
+
+It is recommended that future models include other time variables such as seconds remaining in a half to account for situational importance or minutes played to account for player fatigue in player specific shot models.  Adding interaction effects to the model would be beneficial as one could include defender player measurements i.e., height or wingspan, to the model and examine the interaction between those measurements and the shot location (zone) variable.  The interaction effect could help explain the true impact of a defender in relation to shot success; interaction effects tell us if “two or more features/variables combined have a significantly larger effect on a feature as compared to the sum of the individual variables alone” (Khot, 2020). Without interaction effects, my model assumes that the effect of each variable on the outcome is independent of other variables in the model, which is not truly realistic. Cen et al. (2015) included interaction effects in their model and found that the interaction effect between shot distance and closest defender distance had the highest variable importance.  Thus, future research should include interaction affects.  Incorporating variables that pertain to ball trajectory, angle, or spin would be nice additions, but there are data limitations due to the lack of publicly available NBA tracking data.  Predicting the success of an NBA shot is a difficult task due to the randomness of shot data and data limitations.  If the NBA allows more access to tracking data in the future, research in this area should improve as models will become more accurate.  While this research offers a solid foundation for building shot prediction models, further research is necessary to unlock its full practicality as the next step would be to build an expected points model based on the shot probabilities generated from the shot prediction models.  An expected points model would help convey the value of a shot to players, coaches, and GM’s. 
+
+
+
+
